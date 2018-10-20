@@ -1,7 +1,7 @@
 import numpy as np
 from test_cases import TEST_CASES
 from world import calc_score, apply_to_map
-from solver import HC_1NB_CELLS, DO_MONTE_CARLO
+from solver import HC_1NB_CELLS, DO_MONTE_CARLO, DO_SPLITTED_MONTE_CARLO
 import time
 
 test_case = 0
@@ -13,7 +13,7 @@ for _map, robots in TEST_CASES:
     solution_part1 = HC_1NB_CELLS(_map)
     apply_to_map(_map, solution_part1)
 
-    solution_part2 = DO_MONTE_CARLO(_map, robots, start_time)
+    solution_part2 = DO_SPLITTED_MONTE_CARLO(_map, robots, start_time)
     apply_to_map(_map, solution_part2)
 
     score = calc_score(_map, robots)

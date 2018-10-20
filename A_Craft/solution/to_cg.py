@@ -97,33 +97,73 @@ def find_variants_for_mc(_map):
     return variants
 
 
-def DO_MONTE_CARLO(_map, robots, start_time):
-    score = calc_score(_map, robots)
-    variants = find_variants_for_mc(_map)
+def find_disjoint_components(_map, robots):
+    points = set((e[1], e[0]) for e in np.argwhere(_map != '#'))
+    components = []
+    while len(points):
+        p = points.pop()
+        cmp = set([p])
+        lst = [p]
+        while len(lst):
+            n_lst = []
+            for e in lst:
+                for nb in get_neighbours(_map, e[0], e[1]):
+                    nb_xy = (nb[1], nb[2])
+                    if not nb[4] and not nb_xy in cmp:
+                        cmp.add(nb_xy)
+                        n_lst.append(nb_xy)
+                lst = n_lst
+        points -= cmp
+        components.append(cmp)
     result = []
-    if len(variants) == 0:
-        return result
-    d = dict((v[0], '') for v in variants)
+    for cmp in components:
+        rb = [r for r in robots if (r[0], r[1]) in cmp]
+        if len(rb) == 0:
+            continue
+        result.append((rb, cmp))
+    return result
+
+
+def DO_SPLITTED_MONTE_CARLO(_map, robots, start_time):
+    components = find_disjoint_components(_map, robots)
+    p2c = {}
+    for i, cmp in enumerate(components):
+        for p in cmp[1]:
+            p2c[p] = i
+    variants = find_variants_for_mc(_map)
+    variants_splitted = [[] for i in range(len(components))]
+    for v in variants:
+        if v[0] in p2c:
+            variants_splitted[p2c[v[0]]].append(v)
+    scores = [calc_score(_map, c[0]) for c in components]
+    results = [[]] * len(components)
+    ds = [dict((v[0], '') for v in variants) for variants in variants_splitted]
     while True:
         elapsed_time = time.time() - start_time
         if elapsed_time > 0.8:
             break
-        for v in variants:
-            d[v[0]] = v[1][np.random.randint(0, len(v[1]))]
-        sc = calc_score(_map, robots, d)
-        if sc > score:
-            result = []
-            for k in d:
-                if d[k] != '':
-                    result.append((k[0], k[1], d[k]))
-            score = sc
+        for i in range(len(components)):
+            variants = variants_splitted[i]
+            d = ds[i]
+            for v in variants:
+                d[v[0]] = v[1][np.random.randint(0, len(v[1]))]
+            sc = calc_score(_map, components[i][0], d)
+            if sc > scores[i]:
+                result = []
+                for k in d:
+                    if d[k] != '':
+                        result.append((k[0], k[1], d[k]))
+                scores[i] = sc
+                results[i] = result
+    result = [item for sublist in results for item in sublist]
     return result
+
 
 start_time = time.time()
 solution_part1 = HC_1NB_CELLS(_map)
 apply_to_map(_map, solution_part1)
 
-solution_part2 = DO_MONTE_CARLO(_map, robots, start_time)
+solution_part2 = DO_SPLITTED_MONTE_CARLO(_map, robots, start_time)
 
 solution = solution_part1 + solution_part2
 

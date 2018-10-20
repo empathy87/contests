@@ -1,5 +1,5 @@
 import numpy as np
-from world import get_neighbours, calc_score
+from world import get_neighbours, calc_score, find_disjoint_components
 import time
 
 
@@ -49,4 +49,39 @@ def DO_MONTE_CARLO(_map, robots, start_time):
                 if d[k] != '':
                     result.append((k[0], k[1], d[k]))
             score = sc
+    return result
+
+
+def DO_SPLITTED_MONTE_CARLO(_map, robots, start_time):
+    components = find_disjoint_components(_map, robots)
+    p2c = {}
+    for i, cmp in enumerate(components):
+        for p in cmp[1]:
+            p2c[p] = i
+    variants = find_variants_for_mc(_map)
+    variants_splitted = [[] for i in range(len(components))]
+    for v in variants:
+        if v[0] in p2c:
+            variants_splitted[p2c[v[0]]].append(v)
+    scores = [calc_score(_map, c[0]) for c in components]
+    results = [[]] * len(components)
+    ds = [dict((v[0], '') for v in variants) for variants in variants_splitted]
+    while True:
+        elapsed_time = time.time() - start_time
+        if elapsed_time > 0.8:
+            break
+        for i in range(len(components)):
+            variants = variants_splitted[i]
+            d = ds[i]
+            for v in variants:
+                d[v[0]] = v[1][np.random.randint(0, len(v[1]))]
+            sc = calc_score(_map, components[i][0], d)
+            if sc > scores[i]:
+                result = []
+                for k in d:
+                    if d[k] != '':
+                        result.append((k[0], k[1], d[k]))
+                scores[i] = sc
+                results[i] = result
+    result = [item for sublist in results for item in sublist]
     return result

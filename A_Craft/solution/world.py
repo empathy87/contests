@@ -1,3 +1,5 @@
+import numpy as np
+
 MOVES = {'U': [0, -1],
          'D': [0, 1],
          'R': [1, 0],
@@ -53,3 +55,30 @@ def get_neighbours(_map, x, y):
 def apply_to_map(_map, solution):
     for x, y, a in solution:
         _map[y, x] = a
+
+
+def find_disjoint_components(_map, robots):
+    points = set((e[1], e[0]) for e in np.argwhere(_map != '#'))
+    components = []
+    while len(points):
+        p = points.pop()
+        cmp = set([p])
+        lst = [p]
+        while len(lst):
+            n_lst = []
+            for e in lst:
+                for nb in get_neighbours(_map, e[0], e[1]):
+                    nb_xy = (nb[1], nb[2])
+                    if not nb[4] and not nb_xy in cmp:
+                        cmp.add(nb_xy)
+                        n_lst.append(nb_xy)
+                lst = n_lst
+        points -= cmp
+        components.append(cmp)
+    result = []
+    for cmp in components:
+        rb = [r for r in robots if (r[0], r[1]) in cmp]
+        if len(rb) == 0:
+            continue
+        result.append((rb, cmp))
+    return result
