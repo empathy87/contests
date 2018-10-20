@@ -36,3 +36,18 @@ def calc_score(_map, robots):
         score += robot_score
 
     return score
+
+
+def get_neighbours(_map, x, y):
+    neighbours = []
+    for d in MOVES:
+        nx, ny = roll_coordinates(x + MOVES[d][0], y + MOVES[d][1])
+        nv = _map[ny, nx]
+        is_space = nv == '#'
+        neighbours.append((d, nx, ny, nv, is_space))
+    return neighbours
+
+
+def apply_to_map(_map, solution):
+    for x, y, a in solution:
+        _map[y, x] = a
