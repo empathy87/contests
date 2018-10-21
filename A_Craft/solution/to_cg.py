@@ -237,16 +237,89 @@ def DO_GREED(_map, robots):
     return result
 
 
+def rec(x, y, d, lv, _map, visited, arrows, hot_points, depth):
+    if depth == 5 or not lv:
+        return None, lv, len(visited)
+
+    sp = (x, y)
+    if sp in hot_points:
+        hot_point = hot_points[sp]
+        del hot_points[sp]
+        _max = (False, 0)
+        _wmax = None
+        for w in hot_point:
+            arrows[sp] = w
+            _x, _y, _d, _lv, _vs = move_till_hp_or_death2(x, y, d, _map, visited, arrows, hot_points)
+            e1, e2, e3 = rec(_x, _y, _d, _lv, _map, visited.union(_vs), arrows, hot_points, depth + 1)
+            r = (e2, e3)
+            if r > _max:
+                _wmax, _max = w, r
+            del arrows[sp]
+        hot_points[sp] = hot_point
+        return _wmax, _max[0], _max[1]
+    else:
+        _x, _y, _d, _lv, _vs = move_till_hp_or_death2(x, y, d, _map, visited, arrows, hot_points)
+        return None, rec(_x, _y, _d, _lv, _map, visited.union(_vs), arrows, hot_points, depth + 1)
+
+
+def DO_GREED_DEPTH(_map, robots):
+    variants = find_variants_for_mc(_map)
+    hot_points = {}
+    for v in variants:
+        hot_points[v[0]] = v[1]
+    arrows = {}
+
+    is_live = []
+    states = []
+    visited = []
+    for x, y, d in robots:
+        states.append((x, y, d))
+        visited.append(set())
+        is_live.append(True)
+
+    while any(is_live):
+        for i in range(len(robots)):
+            x, y, d = states[i]
+            sp = (x, y)
+            if sp in hot_points:
+                w, _, _ = rec(x, y, d, is_live[i], _map, visited[i], arrows, hot_points, 0)
+                hot_point = hot_points[sp]
+                del hot_points[sp]
+                arrows[sp] = w
+                x, y, d, is_live[i], new_visited_states = move_till_hp_or_death2(x, y, d, _map, visited[i], arrows, hot_points)
+            else:
+                x, y, d, is_live[i], new_visited_states = move_till_hp_or_death2(x, y, d, _map, visited[i], arrows, hot_points)
+            visited[i] = visited[i].union(new_visited_states)
+            states[i] = (x, y, d)
+
+    result = []
+    for e in arrows:
+        if arrows[e] != '':
+            result.append((e[0], e[1], arrows[e]))
+    return result
+
+
+
 start_time = time.time()
 solution_part1 = HC_1NB_CELLS(_map)
 apply_to_map(_map, solution_part1)
 
-solution_part3 = DO_GREED(_map, robots)
+solution_part3 = DO_GREED_DEPTH(_map, robots)
+solution_part4 = DO_GREED(_map, robots)
+
 _tmp_map = np.copy(_map)
 apply_to_map(_tmp_map, solution_part3)
-score0 = calc_score(_tmp_map, robots)
+score3 = calc_score(_tmp_map, robots)
 
-solution_part2 = DO_SPLITTED_MONTE_CARLO(_map, robots, start_time, score0)
+_tmp_map = np.copy(_map)
+apply_to_map(_tmp_map, solution_part4)
+score4 = calc_score(_tmp_map, robots)
+
+if score4 > score3:
+    solution_part3 = solution_part4
+    score3 = score4
+
+solution_part2 = DO_SPLITTED_MONTE_CARLO(_map, robots, start_time, score3)
 
 solution = solution_part1 + solution_part2 + solution_part3
 
