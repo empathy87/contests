@@ -1,6 +1,11 @@
 import numpy as np
 import time
 
+
+LIMIT = 0.9
+ARROW_IS_HOT = True
+
+
 _map = []
 for i in range(10):
     line = input()
@@ -83,11 +88,20 @@ def HC_1NB_CELLS(_map):
     return result
 
 
+def any_arrow(nb):
+    for n in nb:
+        if n[3] in DIRECTIONS:
+            return True
+    return False
+
+
 def find_variants_for_mc(_map):
     variants = []
     for y, x in np.argwhere(_map == '.'):
         nb = get_neighbours(_map, x, y)
         hot = nb[0][4] != nb[1][4] or nb[2][4] != nb[3][4]
+        if not hot and ARROW_IS_HOT:
+            hot = any_arrow(nb)
         has = nb[0][4] == nb[1][4] or nb[2][4] == nb[3][4]
         if not hot:
             continue
@@ -124,7 +138,29 @@ def find_disjoint_components(_map, robots):
     return result
 
 
-def DO_SPLITTED_MONTE_CARLO(_map, robots, start_time):
+def move_till_hp_or_death(w, x, y, d, _map, visited_states, arrows, hot_points):
+    sp = (x, y)
+    arrows[sp] = w
+    x, y, d, is_live, new_visited_states = move_till_hp_or_death2(x, y, d, _map,  visited_states, arrows, hot_points)
+    del arrows[sp]
+    return w, x, y, d, is_live, new_visited_states
+
+
+def move_till_hp_or_death2(x, y, d, _map, visited_states, arrows, hot_points):
+    new_visited_states = set()
+    d = update_direction(_map, x, y, d, arrows)
+    is_live = True
+    while is_live and (x, y) not in hot_points:
+        new_visited_states.add((x, y, d))
+        x += MOVES[d][0]
+        y += MOVES[d][1]
+        x, y = roll_coordinates(x, y)
+        d = update_direction(_map, x, y, d, arrows)
+        is_live = _map[y, x] != '#' and (x, y, d) not in visited_states and (x, y, d) not in new_visited_states
+    return x, y, d, is_live, new_visited_states
+
+
+def DO_SPLITTED_MONTE_CARLO(_map, robots, start_time, cutoff_score=0):
     components = find_disjoint_components(_map, robots)
     p2c = {}
     for i, cmp in enumerate(components):
@@ -140,7 +176,7 @@ def DO_SPLITTED_MONTE_CARLO(_map, robots, start_time):
     ds = [dict((v[0], '') for v in variants) for variants in variants_splitted]
     while True:
         elapsed_time = time.time() - start_time
-        if elapsed_time > 0.8:
+        if elapsed_time > LIMIT:
             break
         for i in range(len(components)):
             variants = variants_splitted[i]
@@ -155,7 +191,49 @@ def DO_SPLITTED_MONTE_CARLO(_map, robots, start_time):
                         result.append((k[0], k[1], d[k]))
                 scores[i] = sc
                 results[i] = result
+    if sum(scores) < cutoff_score:
+        return []
     result = [item for sublist in results for item in sublist]
+    return result
+
+
+def DO_GREED(_map, robots):
+    variants = find_variants_for_mc(_map)
+    hot_points = {}
+    for v in variants:
+        hot_points[v[0]] = v[1]
+    arrows = {}
+
+    is_live = []
+    states = []
+    visited = []
+    for x, y, d in robots:
+        states.append((x, y, d))
+        visited.append(set())
+        is_live.append(True)
+
+    while any(is_live):
+        for i in range(len(robots)):
+            x, y, d = states[i]
+            sp = (x, y)
+            if sp in hot_points:
+                hot_point = hot_points[sp]
+                del hot_points[sp]
+                ways = []
+                for w in hot_point:
+                    if w == '':
+                        continue
+                    ways.append(move_till_hp_or_death(w, x, y, d, _map, visited[i], arrows, hot_points))
+                w, x, y, d, is_live[i], new_visited_states = max(ways, key=lambda x: (x[4], len(x[5])))
+                arrows[sp] = w
+            else:
+                x, y, d, is_live[i], new_visited_states = move_till_hp_or_death2(x, y, d, _map, visited[i], arrows, hot_points)
+            visited[i] = visited[i].union(new_visited_states)
+            states[i] = (x, y, d)
+
+    result = []
+    for e in arrows:
+        result.append((e[0], e[1], arrows[e]))
     return result
 
 
@@ -163,8 +241,13 @@ start_time = time.time()
 solution_part1 = HC_1NB_CELLS(_map)
 apply_to_map(_map, solution_part1)
 
-solution_part2 = DO_SPLITTED_MONTE_CARLO(_map, robots, start_time)
+solution_part3 = DO_GREED(_map, robots)
+_tmp_map = np.copy(_map)
+apply_to_map(_tmp_map, solution_part3)
+score0 = calc_score(_tmp_map, robots)
 
-solution = solution_part1 + solution_part2
+solution_part2 = DO_SPLITTED_MONTE_CARLO(_map, robots, start_time, score0)
+
+solution = solution_part1 + solution_part2 + solution_part3
 
 print(' '.join([f'{s[0]} {s[1]} {s[2]}' for s in solution]))
