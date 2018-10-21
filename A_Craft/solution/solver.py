@@ -31,6 +31,8 @@ def find_variants_for_mc(_map):
         hot = nb[0][4] != nb[1][4] or nb[2][4] != nb[3][4]
         if not hot and ARROW_IS_HOT:
             hot = any_arrow(nb)
+        if not hot and np.random.random() > 0.7:
+            hot = True
         has = nb[0][4] == nb[1][4] or nb[2][4] == nb[3][4]
         if not hot:
             continue
