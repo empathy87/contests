@@ -1,0 +1,355 @@
+import math
+import numpy as np
+from enum import Enum
+import timeit
+import sys
+import scipy.interpolate as intp
+
+class Status(Enum):
+    UNDER_DAMP = 1
+    OVER_DAMP = 2
+    DAMP_BELOW_GROUND = 3
+    DAMP_ABOVE_CEILING = 4
+    DAMP_SLOW_FALL = 5
+    DAMP_FAST_FALL = 6
+    LAND_UNDER = 7
+    LAND_OVER = 8
+    EXACT = 9
+
+
+DAMP_LESS_STATUSES = (Status.OVER_DAMP, Status.DAMP_BELOW_GROUND, Status.DAMP_FAST_FALL, Status.LAND_UNDER)
+DAMP_MORE_STATUSES = (Status.UNDER_DAMP, Status.DAMP_ABOVE_CEILING, Status.DAMP_SLOW_FALL, Status.LAND_OVER)
+
+
+class Vector:
+    def __init__(self, x=0, y=0, vx=0, vy=0, t=0):
+        self.x, self.y, self.vx, self.vy, self.t = x, y, vx, vy, t
+
+    def __add__(self, d):
+        return Vector(self.x + d.x + d.t * self.vx, self.y + d.y + d.t * self.vy, self.vx + d.vx, self.vy + d.vy, self.t + d.t)
+
+    def __str__(self):
+        return '[%s: (%s, %s) -> (%s, %s)]' % (self.t, self.x, self.y, self.vx, self.vy)
+
+    def inverse(self):
+        return Vector(X_MAX - self.x, self.y, -self.vx, self.vy, self.t)
+
+
+class Control:
+    def __init__(self, p, r):
+        self.power, self.angle = p, r
+
+    def inverse(self):
+        return Control(self.power, -self.angle)
+
+
+class State:
+    def __init__(self, vector, ctrl):
+        self.vector, self.ctrl = vector, ctrl
+
+
+class Ship:
+    def __init__(self, v, c):
+        self.states = [State(v, c)]
+
+    def get_state(self):
+        return self.states[-1]
+
+    def get_ctrl(self):
+        return self.get_state().ctrl.power, self.get_state().ctrl.angle
+
+    def target(self, p1, r1):
+        p0, r0 = self.get_ctrl()
+        p, r, dp, dr = p0, r0, direction(p0, p1), direction(r0, r1)
+        while (p, r) != (p1, r1):
+            r = r1 if abs(r - r1) <= 15 else (r + dr * 15)
+            p = p1 if abs(p - p1) <= 1 else (p + dp)
+            self.states.append(State(self.get_state().vector + vector_move(p, r, 1), Control(p, r)))
+        return self
+
+    def move(self, t):
+        for i in range(t):
+            self.states.append(State(self.get_state().vector + vector_move(*self.get_ctrl(), 1), self.get_state().ctrl))
+        return self
+
+
+tmp_r = np.linspace(-90, 90, 181)
+tmp_p = np.linspace(0, 4, 5)
+R, P = np.meshgrid(tmp_r, tmp_p)
+Ay = P * np.cos(np.deg2rad(R)) - 3.711
+Ax = - P * np.sin(np.deg2rad(R))
+V_RT, V_DMP, V_MV = {}, {}, {}
+VX_MIN, VX_MAX, VY_MIN = -20.49, 20.49, -40.49
+X_MIN, X_MAX = 0, 6999
+A4 = 4.0 - 3.711
+
+
+def vector_rotate(r0, r1):
+    if (r0, r1) not in V_RT:
+        p, r, d = 4, r0, direction(r0, r1)
+        v = Vector()
+        while r != r1:
+            r = r1 if abs(r - r1) <= 15 else (r + d * 15)
+            v = v + vector_move(p, r, 1)
+        V_RT[(r0, r1)] = v
+    return V_RT[(r0, r1)]
+
+
+def direction(a, b):
+    return 1 if a < b else (0 if a == b else -1)
+
+
+def vector_move(p, r, t):
+    if (p, r, t) not in V_MV:
+        vx, vy = Ax[p, r + 90] * t, Ay[p, r + 90] * t
+        V_MV[(p, r, t)] = Vector(t * vx / 2, t * vy / 2, vx, vy, t)
+    return V_MV[(p, r, t)]
+
+
+def vector_damp(r0, r1, t):
+    if (r0, r1, t) not in V_DMP:
+        V_DMP[(r0, r1, t)] = vector_rotate(r0, r1) + vector_move(4, r1, t) + vector_rotate(r1, 0)
+    return V_DMP[(r0, r1, t)]
+
+
+def vector_speed(r0, r1, t):
+    return vector_rotate(r0, r1) + vector_move(4, r1, t)
+
+
+def check_is_slow_fall(vy, y, y_platform):
+    if vy > 0:
+        return True
+    a, b, c = A4 / 2, vy,  -(y_platform - y)
+    d = b ** 2 - 4 * a * c
+    return d <= 0
+
+
+def calc_damp_t(r0, r1, target_dvx):
+    d = vector_damp(r0, r1, 0)
+    t = math.ceil((target_dvx - d.vx) / Ax[4, r1 + 90])
+    return t if t > 0 else 0
+
+
+def calc_damp_land_status(v, r, d_r, d_t, x0_platform, x1_platform, y_platform):
+    v1 = do_damp(v, r, d_r, d_t)
+    if v1.vx < VX_MIN:
+        return Status.UNDER_DAMP
+    if v1.vx > VX_MAX:
+        return Status.OVER_DAMP
+    if v1.y < y_platform:
+        return Status.DAMP_BELOW_GROUND
+    if v1.y >= 3000:
+        return Status.DAMP_ABOVE_CEILING
+
+    if check_is_slow_fall(v1.vy, v1.y, y_platform):
+        return Status.DAMP_SLOW_FALL
+
+    v2 = do_land(v1, y_platform)
+    if v2.vy < VY_MIN:
+        return Status.DAMP_FAST_FALL
+    if v2.x >= x1_platform:
+        return Status.LAND_UNDER
+    if v2.x <= x0_platform:
+        return Status.LAND_OVER
+    return Status.EXACT
+
+
+def calc_min_max_damp_t(v, r, dr):
+    return (0 if v.vx > VX_MIN else calc_damp_t(r, dr, VX_MIN - v.vx),
+            0 if v.vx > VX_MAX else calc_damp_t(r, dr, VX_MAX - v.vx) - 1)
+
+
+def do_land(v, y_platform):
+    a, b, c = A4 / 2, v.vy,  -(y_platform - v.y)
+    d = b ** 2 - 4 * a * c
+    t = (-b - math.sqrt(d)) / 2 / a
+    int_t = math.ceil(t)
+    return Vector(v.x + v.vx * t, y_platform, v.vx, v.vy + int_t * A4, v.t + int_t)
+
+
+def do_damp(v0, r0, r1, t):
+    return v0 + vector_damp(r0, r1, t)
+
+
+def find_any_damp_land(v, r, p_x0, p_x1, p_y):
+    if (p_x1 < v.x and v.vx == 0) or ((p_x1 - v.x) / v.vx > 50):
+        return None
+    start, finish = -90, 0
+    while start <= finish:
+        middle = (start + finish) // 2
+        damp_t_min, damp_t_max = calc_min_max_damp_t(v, r, middle)
+        damp_t_min_status = calc_damp_land_status(v, r, middle, damp_t_min, p_x0, p_x1, p_y)
+        if damp_t_min_status in DAMP_LESS_STATUSES:
+            start = middle + 1
+        elif damp_t_min_status in DAMP_MORE_STATUSES:
+            damp_t_max_status = calc_damp_land_status(v, r, middle, damp_t_max, p_x0, p_x1, p_y)
+            if damp_t_max_status == Status.EXACT:
+                return middle, damp_t_max
+            elif damp_t_max_status in DAMP_LESS_STATUSES:
+                start2, finish2 = damp_t_min, damp_t_max
+                while start2 <= finish2:
+                    middle2 = (start2 + finish2) // 2
+                    damp_t_between_status = calc_damp_land_status(v, r, middle, middle2, p_x0, p_x1, p_y)
+                    if damp_t_between_status in DAMP_LESS_STATUSES:
+                        finish2 = middle2 - 1
+                    elif damp_t_between_status in DAMP_MORE_STATUSES:
+                        start2 = middle2 + 1
+                    elif damp_t_between_status == Status.EXACT:
+                        return middle, middle2
+                    else:
+                        raise 1
+            finish = finish - 1
+        elif damp_t_min_status == Status.EXACT:
+            return middle, damp_t_min
+        else:
+            raise 1
+    return None
+
+
+def optimize_damp_land(v, r, dr, dt, p_x0, p_x1, p_y):
+    while True:
+        done, dr, dt = tmp_go(v, r, dr, dt, 1, 1, p_x0, p_x1, p_y)
+        if not done:
+            done, dr, dt = tmp_go(v, r, dr, dt, 0, 1, p_x0, p_x1, p_y)
+            if not done:
+                done, dr, dt = tmp_go(v, r, dr, dt, 1, 0, p_x0, p_x1, p_y)
+                if not done:
+                    break
+    return dr, dt
+
+
+def tmp_go(v, r, dr, dt, sr, st, x0_platform, x1_platform, y_platform):
+    s, done = 1, False
+    while True:
+        test_dr, test_dt = dr - s * sr, dt - s * st
+        if calc_damp_land_status(v, r, test_dr, test_dt, x0_platform, x1_platform, y_platform) != Status.EXACT:
+            break
+        done, s, dr, dt = True, s * 2, test_dr, test_dt
+    return done, dr, dt
+
+
+def optimize_ship(ship, p_x0, p_x1, p_y, heights):
+    vector, r0 = ship.get_state().vector, ship.get_state().ctrl.angle
+    best_t = None
+    result = None
+    for r in range(0, 90):
+        best_s = None
+        best_row_t = None
+        s_range, inversed = range(0, 50), False
+        if result is not None:
+            s_range, inversed = range(result[1], -1, -1), True
+        for s in s_range:
+            v1 = vector + vector_speed(r0, r, s)
+            if (not inversed and v1.x < p_x1) or v1.y >= 3000:
+                break
+            dl = find_any_damp_land(v1, r, p_x0, p_x1, p_y)
+            if dl is not None:
+                d_r, d_t = dl
+                d_r, d_t = optimize_damp_land(v1, r, d_r, d_t, p_x0, p_x1, p_y)
+                v2 = do_damp(v1, r, d_r, d_t)
+                v3 = do_land(v2, p_y)
+                delta = 0
+                if r == ship.get_state().ctrl.angle:
+                    delta = -1
+                test_ship = Ship(ship.get_state().vector, Control(4, ship.get_state().ctrl.angle)).target(4, r).move(s + delta).target(4, d_r).move(d_t).target(4, 0).move(v3.t - v2.t - 1)
+                is_fail = is_ship_fail(test_ship, heights)
+                if best_row_t is not None and (v3.t > best_row_t or is_fail):
+                    break
+                if not is_fail:
+                    best_row_t, best_s = v3.t, s
+                    if best_t is None or v3.t < best_t:
+                        best_t = v3.t
+                        result = (r, s, (d_r, d_t))
+            elif best_row_t is not None:
+                break
+        if best_t is not None and best_s is None:
+            break
+    ship.target(4, result[0]).move(result[1]).target(4, result[2][0]).move(result[2][1]).target(4, 0)
+    return ship
+
+
+def inverse(tc):
+    return tc[0].inverse(), tc[1].inverse(), (X_MAX - tc[2][1], X_MAX - tc[2][0], tc[2][2])
+
+
+def inverse_ground(ground_points):
+    return sorted([(X_MAX - g[0], g[1]) for g in ground_points])
+
+
+def build_heights(g):
+    return intp.interp1d([p[0] for p in g], [p[1] for p in g])(np.linspace(X_MIN, X_MAX, X_MAX - X_MIN + 1))
+
+
+def is_ship_fail(ship, heights):
+    for s in ship.states:
+        x, y = int(round(s.vector.x)), s.vector.y
+        if heights[x] >= y:
+            return True
+    return False
+
+
+#main()
+
+# Auto-generated code below aims at helping you parse
+# the standard input according to the problem statement.
+
+p_land_x, p_land_y = None, None
+x0_platform, x1_platform, y_platform = None, None, None
+ground = []
+surface_n = int(input())  # the number of points used to draw the surface of Mars.
+for i in range(surface_n):
+    land_x, land_y = [int(j) for j in input().split()]
+    ground.append((land_x, land_y))
+    print((land_x, land_y), file=sys.stderr)
+    if p_land_x is not None and p_land_y == land_y and (land_x - p_land_x) >= 1000:
+        x0_platform, x1_platform, y_platform = p_land_x, land_x, land_y
+    p_land_x, p_land_y = land_x, land_y
+
+#ship = Ship(2500, 2700, 0, 0, 0, 0, False)
+#ship.target(4, -83).move(5)
+#do_damp_land(ship, 150, 4000, 5500)
+
+#-- tmp --
+#ship.target(0, 0).target(4, -30).move(37).target(4, 0).move(100)
+#ship.target(1, 75).target(2, 60).target(3, 45)
+#ship.target(4, 74).target(4, -50).move(29).target(4, 0).move(100)
+#-- end tmp --
+#ship.target(2, 90).target(2, 75)
+#do_damp_land(ship, 100, 1500, 3000)
+
+#ship = Ship(6500, 2800, -90, 0, 0, 90, False)
+#ship.target(0, 0)
+#do_damp_land(ship, 150, 4000, 5500)
+#do_angle_move_damp_land(ship, 150, 4000, 5500)
+
+#ship = Ship(500, 2700, 100, 0, 0, -90, False)
+#ship.target(4, -50).move(2)
+#do_damp_land(ship, 200, 4000, 5000)
+
+#ship = Ship(6500, 2700, -50, 0, 0, 90, False)
+#ship.target(4, 14).move(38)
+#ship.target(1, 75).target(2, 60).target(3, 45)
+#print(list(ship.getState()))
+#do_damp_land(ship, 2100, 500, 1500)
+#do_angle_move_damp_land(ship, 2100, 500, 1500)
+
+x, y, h_speed, v_speed, fuel, rotate, power = [int(i) for i in input().split()]
+test_case = (Vector(x, y, h_speed, v_speed), Control(power, rotate), (x0_platform, x1_platform, y_platform))
+print((x, y, h_speed, v_speed, fuel, rotate, power), file=sys.stderr)
+print((x0_platform, x1_platform, y_platform), file=sys.stderr)
+inversed = 1
+if x < x0_platform:    
+    inversed, test_case, ground = -1, inverse(test_case), inverse_ground(ground)
+
+t = test_case
+heights = build_heights(ground)
+v0, c0, x0_platform, x1_platform, y_platform = t[0], t[1], t[2][0], t[2][1], t[2][2]
+ship = Ship(v0, c0)
+ship.target(3, 45)
+optimize_ship(ship, x0_platform, x1_platform, y_platform, heights).move(100)
+
+steps = ["%s %s" % (inversed * s.ctrl.angle, s.ctrl.power) for s in ship.states]
+steps = steps[1:]
+for s in steps:
+    print(s)
+
